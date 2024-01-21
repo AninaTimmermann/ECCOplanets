@@ -6,6 +6,7 @@ from scipy.optimize import minimize
 from scipy.optimize import Bounds
 from scipy.optimize import LinearConstraint
 from scipy.optimize import linprog
+from scipy.stats import norm
 from scipy import interpolate
 
 
@@ -89,25 +90,25 @@ class molecule:
         
         if therm_prop == 'all':
             fig, axs = pl.subplots(3, sharex=True)
-            fig.suptitle('Thermochemical properties of '+self.name)
-            axs[0].plot(T,[self.S(k) for k in T],label='S (Shomate)')
-            axs[0].plot(self.nist['Temperature'],self.nist['Entropy'],'d',label='S (tabulated)')
-            axs[0].set_ylabel(r'S $\left[ \frac{J}{K \cdot mol} \right]$')
+            #fig.suptitle('Thermochemical properties of '+self.name)
+            axs[0].plot(T,[self.S(k) for k in T],label=r'$S^o$ (Shomate)')
+            axs[0].plot(self.nist['Temperature'],self.nist['Entropy'],'d',label=r'$S^o$ (tabulated)')
+            axs[0].set_ylabel(r'$S^o$ $\left[ \frac{\rm{J}}{\rm{K} \cdot \rm{mol}} \right]$')
             axs[0].legend()
-            axs[1].plot(T,[self.H_H0(k) for k in T],label='H_H0 (Shomate)')
-            axs[1].plot(self.nist['Temperature'],self.nist['Enthalpy'],'d',label='H_H0 (tabulated)')
-            axs[1].set_ylabel(r'H_H0 $\left[ \frac{kJ}{K \cdot mol} \right]$')
+            axs[1].plot(T,[self.H_H0(k) for k in T],label=r'$H-H^o$ (Shomate)')
+            axs[1].plot(self.nist['Temperature'],self.nist['Enthalpy'],'d',label=r'$H-H^o$ (tabulated)')
+            axs[1].set_ylabel(r'$H-H^o$ $\left[ \frac{\rm{kJ}}{\rm{mol}} \right]$')
             axs[1].legend()
-            axs[2].plot(T,[self.G0(k) for k in T],label='G0 (Shomate)')
+            axs[2].plot(T,[self.G0(k) for k in T],label=r'$G^o$ (Shomate)')
             axs[2].legend()
-            axs[2].set_ylabel(r'G0 $\left[ \frac{J}{K \cdot mol} \right]$')
-            axs[2].set_xlabel('T [K]')
+            axs[2].set_ylabel(r'$G^o$ $\left[ \frac{\rm{J}}{\rm{mol}} \right]$')
+            axs[2].set_xlabel('$T$ [K]')
             axs[2].set_xlim(T[0],T[-1])
         else:
             if new_fig:
                 pl.figure()
             pl.plot(T,[getattr(self, therm_prop)(k) for k in T],label=getattr(self, 'name'))
-            pl.xlabel('T [K]')
+            pl.xlabel('$T$ [K]')
             pl.ylabel(therm_prop)
             pl.legend()
             if tab:
@@ -165,12 +166,12 @@ class condensation_simulation:
             for s in solids:
                 pl.plot(newDF.index.values,newDF[s].values/newDF.sum(axis=1) * 100,label=s)
             pl.xlim(newDF.index[0],newDF.index[-1])
-            pl.xlabel('Temperature [K]')
+            pl.xlabel('$T$ [K]')
             pl.ylabel('mol-%')
             pl.legend(ncol= 4,bbox_to_anchor=[0.5,-0.5],loc='lower center')
         
     
-    def remove(self,temps,specs,save=False):
+    def remove(self,temps,spec,update=False,save=False):
         """
         Paramenters
         ------------
@@ -179,16 +180,19 @@ class condensation_simulation:
         save : (bool) if True, updated DataFrame will be saved under new name
         """   
         data = self.result.copy()
-        data.at[temps,specs] = np.nan
-        data[specs] = data[specs].interpolate()
+        for t in temps:
+            data.at[t,spec] = np.nan
+        data[spec] = data[spec].interpolate()
         pl.figure()
-        for i,s in enumerate(specs):
-            pl.plot(data.index,data[s]/self.result.sum(axis=1) * 100,ls='-',c=cc.by_key()['color'][i], label=s+' new')
-            pl.plot(self.result.index,self.result[s]/self.result.sum(axis=1) * 100,ls=':',c=cc.by_key()['color'][i],alpha=0.6,label=s+' old')
-        pl.xlim(2000,300)
-        pl.xlabel('Temperature [K]')
+        pl.plot(data.index,data[spec]/self.result.sum(axis=1) * 100,ls='-', label=spec+' new')
+        pl.plot(self.result.index,self.result[spec]/self.result.sum(axis=1) * 100,ls=':',alpha=0.3, label=spec+' old')
+        pl.xlim(np.max(temps)+100,np.min(temps)-100)
+        pl.xlabel('$T$ [K]')
         pl.ylabel('mol-%')
+        pl.yscale('log')
         pl.legend()
+        if update:
+            self.result.update(data)
         if save:
             data.attrs = {'system':self.info['system'],'pressure':self.info['disk pressure']}
             name = self.create_filename()
@@ -291,7 +295,7 @@ class condensation_simulation:
         
         return condensation_simulation(sim_rec)
     
-    def smooth(self,molecule,T_start,T_end,quant1,quant2,update=False,save=False):
+    def smooth(self,molecule,T_start,T_end,quant1,quant2,win=20,update=False,save=False):
         """
         Paramenters
         ------------
@@ -307,8 +311,8 @@ class condensation_simulation:
         dat = simDF[molecule].loc[T_start:T_end]
         T = dat.index.values
         newdat = []
-        for i in range(int(len(dat)/20)):
-            ds = dat.values[i*20:i*20+20]
+        for i in range(int(len(dat)/win)):
+            ds = dat.values[i*win:i*win+win]
             q1,q2 = np.quantile(ds,[quant1,quant2])
             for d in ds:
                 if d >= q1 and d <= q2:
@@ -322,9 +326,9 @@ class condensation_simulation:
         newDF = newDF.dropna()
         pl.figure()
         pl.plot(newDF.index,newDF[molecule]/self.result.loc[newDF.index].sum(axis=1) * 100,ls='-',c='k', label=molecule+' new')
-        pl.plot(self.result.index,self.result[molecule]/self.result.sum(axis=1) * 100,ls='-',c='k',alpha=0.6,label=molecule+' old')
-        pl.xlim(2000,300)
-        pl.xlabel('Temperature [K]')
+        pl.plot(self.result.index,self.result[molecule]/self.result.sum(axis=1) * 100,ls='-',c='k',alpha=0.3,label=molecule+' old')
+        pl.xlim(6000,300)
+        pl.xlabel('$T$ [K]')
         pl.ylabel('mol-%')
         pl.legend()
         
@@ -492,25 +496,34 @@ class condensation_simulation:
         
         if plot:
             fig, ax1 = pl.subplots()
-            color = 'black'
-            ax1.set_xlabel('Temperature [K]')
-            ax1.set_ylabel('gas form [%]', color=color)
-            ax1.plot(self.result.index.values,gas_pc, color=color)
+            #color = 'black'
+            color='navy'
+            ax1.set_xlabel('$T$ [K]')
+            #ax1.set_ylabel('gas form [%]', color=color)
+            ax1.plot(self.result.index.values,gas_pc, color=color,lw=2)
             
             ax1.tick_params(axis='y', labelcolor=color)
             ax1.set_xlim(self.result.index[0],self.result.index[-1])
             ax1.set_ylim(-1,101)
             ax2 = ax1.twinx()  
             color = 'royalblue'
-            ax2.set_ylabel('solid form [%]', color=color)  
-            ax2.plot(self.result.index.values,solid_pc, color=color)
+            #ax2.set_ylabel('solid form [%]', color=color)  
+            ax2.plot(self.result.index.values,solid_pc, color=color,lw=2)
             ax2.tick_params(axis='y', labelcolor=color)
             ax2.set_ylim(-1,101)
+            ax1.set_ylabel(r'${ n_{\rm{Ca \,(g)}} }\;/\;{ n_{\rm{Ca \,(tot)}} }$ [%]', color='k')
+            ax2.set_ylabel(r'${ n_{\rm{Ca \,(s)}} }\;/\;{ n_{\rm{Ca \,(tot)}} }$ [%]', color='k')
             if len(np.where(solid_pc>=50)[0]) > 0:
-                ax2.plot(cond_T,50,'d',mfc='r',mec='k',ms=10,label=r'$T_{cond}$ ('+element+') = '+str(cond_T)+' K')
+                ax2.plot(cond_T,50,'d',mfc='r',mec='k',ms=10,label=r'$T_{c}$ ('+element+') = '+str(int(cond_T))+' K')
                 ax2.legend(loc='center left')   
             else:
                 ax2.legend([element+' stays mostly in gas phase'],loc='center left')
+        
+            ind10 = np.where(solid_pc>=10)[0][0]
+            ind90 = np.where(solid_pc>=90)[0][0]
+            DTC = self.result.index.values[ind10] - self.result.index.values[ind90]
+            print(DTC)
+        
         
         else: 
             if len(np.where(solid_pc>=50)[0]) > 0: return cond_T
@@ -543,23 +556,28 @@ class condensation_simulation:
                     else: elements[e][i] += amount*struc[e]
         composition = pd.DataFrame(elements)
         composition = composition.set_index('T')
+        
+        total_solids_ppm = composition.sum(axis=1) / abundance.loc[self.info['system']].sum() * 1e6
+        
         if normalise == 'percent': composition = composition.divide(composition.sum(axis=1),axis='index')*100
         elif normalise == False: pass
         else: composition = composition.divide(composition[normalise],axis='index')
+        
         
 
         el_condTs = {}
         for e in composition.columns:
             T = self.condensation_element(e,plot=False)
             el_condTs[e] = T
-            
+        
         condT_DF = pd.DataFrame(el_condTs, index=['cond T'])
         composition = pd.concat([condT_DF,composition])
+        composition['atoms in solids (total) [ppm]'] = np.insert(total_solids_ppm.values,0,np.nan)        
 
         composition.attrs = {'system':self.info['system'],'pressure':self.info['disk pressure'],'normalisation':normalise,'wt':wt}
 
         if save:
-            name = self.info['system']+'_solids-comp_'+'norm-'+str(normalise)+'_wt-'+str(wt)
+            name = self.info['system']+'_p'+str(self.info['disk pressure'])+'_solids-comp_'+'norm-'+str(normalise)+'_wt-'+str(wt)
             composition.to_pickle(path+r'\el_amounts\\'+name+'.pkl')
         
         return composition
@@ -674,22 +692,29 @@ class condensation_simulation:
         for s in self.sim_mols:
             pl.plot(self.result.index.values,self.result[s].values/self.result.sum(axis=1) * 100,label=s)
         pl.yscale('log')
-        pl.xlabel('Temperature [K]')
+        pl.xlabel('$T$ [K]')
         pl.ylabel('mol-%')
-        pl.legend()
+        #pl.legend()
         pl.xlim(self.result.index[0],self.result.index[-1])
     
     def plot_s(self):
         solids = []
+        '''
         for m in sorted(self.sim_mols):
             if molecule(m).phase == 's':
                 solids.append(m)
-        pl.figure(figsize=(12,12))
+        '''
+        pl.figure(figsize=(16,10))
+        
+        seq = self.condensation_sequence()
+        for i in seq.index:
+            if not seq['condensation_T'][i] == []:
+                solids.append(i)
         for s in solids:
             pl.plot(self.result.index.values,self.result[s].values/self.result.sum(axis=1) * 100,label=s)
-        pl.xlabel('Temperature [K]')
+        pl.xlabel('$T$ [K]')
         pl.ylabel('mol-%')
-        pl.legend(ncol= 4,bbox_to_anchor=[0.5,-0.5],loc='lower center')
+        pl.legend(ncol= 4,bbox_to_anchor=[0.5,-0.5],loc='lower center',fontsize=22)
         pl.xlim(1800,self.info['T_end']) 
 
     
@@ -702,7 +727,7 @@ class condensation_simulation:
             c_T, c_mol = self.cond_T(mol)
             pl.plot(c_T,c_mol,'d',mfc='r',mec='k',ms=10,label=r'$T_{cond}$ = '+str(c_T)+' K')
             pl.xlim(2000,self.result.index[-1])
-        pl.xlabel('Temperature [K]')
+        pl.xlabel('$T$ [K]')
         pl.ylabel('mol-%')
         pl.legend()
 
@@ -710,7 +735,7 @@ class condensation_simulation:
         if nf == True: pl.figure()
         for s in mol_ls:
             pl.plot(self.result.index.values,self.result[s].values/self.result.sum(axis=1) * 100,label=s)
-        pl.xlabel('Temperature [K]')
+        pl.xlabel('$T$ [K]')
         pl.ylabel('mol-%')
         pl.legend()
         pl.xlim(self.info['T_start'],self.info['T_end'])    
@@ -718,7 +743,7 @@ class condensation_simulation:
     def plot2(self,mol1,mol2):
         fig, ax1 = pl.subplots()
         color = 'black'
-        ax1.set_xlabel('Temperature [K]')
+        ax1.set_xlabel('$T$ [K]')
         ax1.set_ylabel(mol1+' mol-%', color=color)
         ax1.plot(self.result.index.values, self.result[mol1].values/self.result.sum(axis=1) * 100, color=color)
         ax1.tick_params(axis='y', labelcolor=color)
@@ -729,7 +754,7 @@ class condensation_simulation:
         ax2.plot(self.result.index.values, self.result[mol2].values/self.result.sum(axis=1) * 100, color=color)
         ax2.tick_params(axis='y', labelcolor=color)
     
-    def plot_el(self,element):
+    def plot_el(self,element,nf=True):
         el_mols = []
         for m in self.sim_mols:
             if element in molecule(m).composition.index.values:
@@ -737,7 +762,7 @@ class condensation_simulation:
         pl.figure()
         for s in el_mols:
             pl.plot(self.result.index.values,self.result[s].values/self.result.sum(axis=1) * 100,label=s)
-        pl.xlabel('Temperature [K]')
+        pl.xlabel('$T$ [K]')
         pl.ylabel('mol-%')
         pl.legend(ncol= 4,bbox_to_anchor=[0.5,-0.5],loc='lower center', borderaxespad=0.)
         pl.xlim(self.info['T_start'],self.info['T_end'])
@@ -749,15 +774,32 @@ class planet:
     def __init__(self,composition_result):
         self.result = composition_result
         self.condTs = self.result.iloc[0]
-        self.composition = self.result.iloc[1:]
+        self.composition = self.result.iloc[1:].drop(columns=['atoms in solids (total) [ppm]'])
+        self.atoms_s_ppm = self.result['atoms in solids (total) [ppm]'].iloc[1:]
         self.info = {'T_start':self.composition.index.max(),
                      'T_end':self.composition.index.min(),
                      'T_int':self.composition.index[0]-self.composition.index[1],
-                     'elements':self.result.columns,
+                     'elements':self.composition.columns,
                      'system':self.result.attrs['system'],
                      'disk pressure':self.result.attrs['pressure'],
                      'normalisation':self.result.attrs['normalisation'],
                      'wt':self.result.attrs['wt']}
+        
+    def feedingzone(self,dT,wt=True):
+        els = self.info['elements'].sort_values(ascending=False)
+        bc_pc = self.composition.copy(deep=True)
+        bc_pc = bc_pc.loc[self.condTs.max():]
+        
+        if wt and not self.info['wt']:
+            for e in els:
+                bc_pc[e] *= atom_wt.loc[e].values
+        
+        bc_pc_fz = bc_pc.rolling(dT,center=True).mean()
+        
+        tot = bc_pc_fz.sum(axis=1)
+        bc_pc_fz = bc_pc_fz.divide(tot,axis=0) * 100
+        return bc_pc_fz
+    
     
     def plot_bc(self,condTs=False,wt=True):
         els = self.info['elements'].sort_values(ascending=False)
@@ -771,24 +813,72 @@ class planet:
         bc_pc = bc_pc.divide(tot,axis=0) * 100
         
         
-        pl.figure()
+        pl.figure(figsize=(12,6))
         for i in range(1,len(els)+1):
             pl.fill_between(np.array(bc_pc.index, dtype=float), np.array(bc_pc[els[:i-1]].sum(axis=1).values, dtype=float),np.array(bc_pc[els[:i]].sum(axis=1), dtype=float), color= c_dic[els[i-1]],alpha=0.8,ec='k',label=els[i-1])
             if condTs:
-                pl.axvline(self.condTs[els[i-1]], color= c_dic[els[i-1]])
+                if type(self.condTs[els[i-1]]) == np.float64:
+                    pl.axvline(self.condTs[els[i-1]], color= c_dic[els[i-1]])
         
         pl.xlim(self.condTs.max()+5,self.info['T_end'])
         pl.ylim(0,100)
-        pl.legend()
-        pl.xlabel('T [K]')
-        pl.ylabel('bulk composition [%]') 
+        pl.legend(ncols=int(len(els)/2),bbox_to_anchor =(0.5,-0.45), loc='lower center')
+        pl.xlabel('$T$ [K]')
+        pl.ylabel('bulk composition [wt-%]\n ') 
         
+    def plot_bc_fz(self,dT,method='Gauss',condTs=False,wt=True):
+        els = self.info['elements'].sort_values(ascending=False)
+        bc_pc = self.composition.copy(deep=True)
+        bc_pc = bc_pc.loc[self.condTs.max():]
+        ylab = 'bulk composition [wt-%]'
+                
+        if wt and not self.info['wt']:
+            for e in els:
+                bc_pc[e] *= atom_wt.loc[e].values
+        
+        if not wt: 'bulk composition [%]'
+        
+        
+        if method == 'mean':
+            bc_pc_fz = bc_pc.multiply(self.atoms_s_ppm,axis=0).rolling(dT,center=True).mean()
+            tot = bc_pc_fz.sum(axis=1)
+            bc_pc_fz = bc_pc_fz.divide(tot,axis=0) * 100
+            ylab += '\nblock feeding zone'
+            
+        if method == 'Gauss':
+            bc_pc_fz = bc_pc.copy()
+            ylab += '\nGaussian feeding zone'
+            for T in bc_pc.index.tolist():
+                Gauss = norm.pdf(bc_pc.index.tolist(),T,dT)
+
+                bc_pc_norm = bc_pc.multiply(Gauss,axis=0).multiply(self.atoms_s_ppm,axis=0).sum(axis=0)
+                
+                bc_pc_fz.loc[T] =  bc_pc_norm / bc_pc_norm.sum() * 100
+            dT *= 2
+        
+        
+        pl.figure(figsize=(12,5))
+        for i in range(1,len(els)+1):
+            pl.fill_between(np.array(bc_pc_fz.index, dtype=float), np.array(bc_pc_fz[els[:i-1]].sum(axis=1).values, dtype=float),np.array(bc_pc_fz[els[:i]].sum(axis=1), dtype=float), color= c_dic[els[i-1]],alpha=0.8,ec='k',label=els[i-1])
+            if condTs:
+                if type(self.condTs[els[i-1]]) == np.float64:
+                    pl.axvline(self.condTs[els[i-1]], color= c_dic[els[i-1]])
+        
+        pl.xlim(self.condTs.max()-dT/2,self.info['T_end']+dT/2)
+        pl.ylim(0,100)
+        #pl.legend()
+        pl.xlabel(r'T$_{central}$ [K] (feeding zone width: '+str(dT)+'K)')
+        pl.ylabel(ylab)
+     
                 
         
     
-    def plot_devol(self,norm='Al',condTs=False):
+    def plot_devol(self,norm='Al',feedingzone=False,condTs=False):
         els = self.info['elements']
         devol = self.composition.copy(deep=True)
+        
+        if feedingzone:
+            devol = devol.rolling(feedingzone,center=True).mean()
         
         stell_original = abundance.loc[self.info['system']]
         stell = stell_original.copy(deep=True)
@@ -807,19 +897,21 @@ class planet:
         for e in els:
             pl.plot(devol.index,devol[e]/stell[e],ls='-',c=c_dic[e],label=e)
             if condTs:
-                pl.axvline(self.condTs[e], ls=':', color= c_dic[e])
+                if type(self.condTs[e]) == np.float64:
+                    pl.axvline(self.condTs[e], ls=':', color= c_dic[e])
         
         pl.xlim(self.condTs.max()+5,self.info['T_end'])
         pl.ylim(0,1)
         pl.legend()
-        pl.xlabel('T [K]')
+        pl.xlabel('$T$ [K]')
         pl.ylabel(r'$\left(\frac{X_i}{X_{Al}}\right)_p / \left(\frac{X_i}{X_{Al}}\right)_\star$') 
+        return devol/stell
     
-    def plot_el(self,element,condT=True):
-        pl.figure()
+    def plot_el(self,element,condT=True,nf=True):
+        if nf: pl.figure()
         pl.plot(self.composition.index,self.composition[element],'-',c='k')
         if condT: pl.axvline(self.condTs[element],ls=':',c='k')
-        pl.xlabel('T [K]')
+        pl.xlabel('$T$ [K]')
         if self.info['wt']:
             if self.info['normalisation'] == 'percent': ytit1 = '[wt-%]'
             elif not self.info['normalisation']: ytit1 = '[u]'
